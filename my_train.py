@@ -19,6 +19,8 @@ Features:
 """
 
 import os
+import pandas as pd  # preload before torch to avoid a pyarrow access violation on Windows
+from datasets import load_dataset  # preload before torch for the same pyarrow issue
 import torch
 
 import torch.nn as nn

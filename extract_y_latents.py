@@ -1,14 +1,174 @@
+print(">>> [0] script import started", flush=True)
+
 import os
-import torch
+import argparse
+import random
 import numpy as np
+
+print(">>> [0.1] basic imports done", flush=True)
+
+import matplotlib
+matplotlib.use("Agg")   # 防止 Windows 后端卡住
 import matplotlib.pyplot as plt
+
+print(">>> [0.2] matplotlib imported", flush=True)
 
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-from my_utils import args_train, set_seed, acquire_device, get_data
-from my_temporal_AE import get_temporal_autoencoder
+print(">>> [0.3] sklearn imported", flush=True)
+
+from data_provider.data_factory import data_provider
+import torch
+import torch.nn as nn
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    if v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+
+def acquire_device(args):
+    if args.use_gpu and args.gpu_type == "cuda" and torch.cuda.is_available():
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+        device = torch.device(f"cuda:{args.gpu}")
+        print(f"Use GPU: cuda:{args.gpu}")
+    elif args.use_gpu and args.gpu_type == "mps":
+        device = torch.device("mps")
+        print("Use GPU: mps")
+    else:
+        device = torch.device("cpu")
+        print("Use CPU")
+    return device
+
+
+def get_data(args, flag):
+    return data_provider(args, flag)
+
+
+def args_train():
+    parser = argparse.ArgumentParser(
+        description="Extract future target latents and cluster z_y"
+    )
+
+    parser.add_argument("--task_name", type=str, required=True, default="long_term_forecast")
+    parser.add_argument("--is_training", type=int, required=True, default=0)
+    parser.add_argument("--model_id", type=str, required=True, default="extract_zy_cluster")
+    parser.add_argument("--model", type=str, required=True, default="DLinear")
+
+    parser.add_argument("--data", type=str, required=True, default="ETTh1")
+    parser.add_argument("--root_path", type=str, default="./dataset/ETT-small/")
+    parser.add_argument("--data_path", type=str, default="ETTh1.csv")
+    parser.add_argument("--features", type=str, default="M")
+    parser.add_argument("--target", type=str, default="OT")
+    parser.add_argument("--freq", type=str, default="h")
+    parser.add_argument("--embed", type=str, default="timeF")
+    parser.add_argument("--checkpoints", type=str, default="./checkpoints/")
+
+    parser.add_argument("--seq_len", type=int, default=96)
+    parser.add_argument("--label_len", type=int, default=48)
+    parser.add_argument("--pred_len", type=int, default=96)
+    parser.add_argument("--step", type=int, default=1)
+    parser.add_argument("--seasonal_patterns", type=str, default="Monthly")
+    parser.add_argument("--inverse", action="store_true", default=False)
+
+    parser.add_argument("--enc_in", type=int, default=7)
+    parser.add_argument("--dec_in", type=int, default=7)
+    parser.add_argument("--c_out", type=int, default=7)
+    parser.add_argument("--d_model", type=int, default=32)
+    parser.add_argument("--d_ff", type=int, default=64)
+
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--seed", type=int, default=2)
+    parser.add_argument("--augmentation_ratio", type=int, default=0)
+
+    parser.add_argument("--use_gpu", type=str2bool, default=True)
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--gpu_type", type=str, default="cuda")
+    parser.add_argument("--use_multi_gpu", action="store_true", default=False)
+    parser.add_argument("--devices", type=str, default="0,1,2,3")
+
+    parser.add_argument("--autoencoder_path", type=str, required=True)
+    parser.add_argument("--ae_type", type=str, default="MLP", choices=["MLP"])
+    parser.add_argument("--ae_loss", type=str, default="MSE", choices=["MSE", "MAE"])
+
+    args = parser.parse_args()
+
+    if torch.cuda.is_available() and args.use_gpu:
+        args.device = torch.device(f"cuda:{args.gpu}")
+        print("Using GPU")
+    else:
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            args.device = torch.device("mps")
+        else:
+            args.device = torch.device("cpu")
+        print("Using cpu or mps")
+
+    print("Args in experiment:")
+    print(args)
+    return args
+
+
+class AutoEncoder(nn.Module):
+    """
+    Minimal MLP AutoEncoder for official LatentTSF MLP checkpoints.
+    Input:  [B, T, enc_in]
+    Latent: [B, T, d_model]
+    Output: [B, T, enc_in]
+    """
+    def __init__(self, args):
+        super(AutoEncoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(args.enc_in, args.d_ff),
+            nn.ReLU(),
+            nn.Linear(args.d_ff, args.d_model),
+            nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(args.d_model, args.d_ff),
+            nn.ReLU(),
+            nn.Linear(args.d_ff, args.enc_in),
+        )
+
+    def encode(self, x):
+        return self.encoder(x)
+
+    def decode(self, latent):
+        return self.decoder(latent)
+
+    def forward(self, x):
+        return self.decode(self.encode(x))
+
+
+def get_autoencoder(args):
+    ae_type = getattr(args, "ae_type", "MLP").upper()
+    if ae_type != "MLP":
+        raise ValueError(
+            f"This extraction script only supports official MLP AE checkpoints. Got ae_type={ae_type}"
+        )
+
+    print("Using minimal MLP AutoEncoder for official checkpoint", flush=True)
+    print("  Latent shape: [batch, seq_len, d_model]", flush=True)
+    return AutoEncoder(args)
+
+print(">>> [0.4] project imports done", flush=True)
 
 
 def freeze_model(model):
@@ -17,27 +177,33 @@ def freeze_model(model):
         p.requires_grad = False
 
 
-def load_temporal_ae(args, device):
+def load_pretrained_mlp_ae(args, device):
     """
-    Build TemporalAutoEncoder / TemporalCNN architecture and load pretrained checkpoint.
-    Important: args must match the AE training config:
-        ae_type, seq_len, enc_in, d_model, d_ff
+    Load pretrained MLP AutoEncoder from my_AE.py.
+
+    This is for the official LatentTSF pretrained AE checkpoints:
+        ae_type = MLP
+        latent shape = [B, seq_len, d_model]
+
+    Important:
+        args.enc_in, args.d_model, args.d_ff, args.ae_type
+        must match the checkpoint config.
     """
     assert args.autoencoder_path is not None, "Please provide --autoencoder_path"
 
-    model = get_temporal_autoencoder(args).float().to(device)
+    model = get_autoencoder(args).float().to(device)
 
-    print(f"Loading AE checkpoint from: {args.autoencoder_path}")
+    print(f"Loading pretrained AE checkpoint from: {args.autoencoder_path}")
     state_dict = torch.load(args.autoencoder_path, map_location=device)
 
-    # Compatible with plain checkpoint or DataParallel checkpoint
+    # Compatible with DataParallel checkpoints
     if any(k.startswith("module.") for k in state_dict.keys()):
         state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
 
     model.load_state_dict(state_dict)
     freeze_model(model)
 
-    print("Loaded and frozen TemporalAutoEncoder.")
+    print("Loaded and frozen pretrained MLP AutoEncoder.")
     return model
 
 
@@ -46,10 +212,18 @@ def extract_latents(args, model, device, save_dir):
     Extract:
         z_x = E(X)
         z_y = E(Y_future)
+
     Save:
         train_zx.npy
         train_zy.npy
         train_y.npy
+
+    For MLP AE:
+        batch_x:  [B, seq_len, enc_in]
+        z_x:      [B, seq_len, d_model]
+
+        y_target: [B, pred_len, enc_in]
+        z_y:      [B, pred_len, d_model]
     """
     train_data, train_loader = get_data(args, flag="train")
 
@@ -64,20 +238,11 @@ def extract_latents(args, model, device, save_dir):
             batch_x = batch_x.float().to(device)
             batch_y = batch_y.float().to(device)
 
-            # Use the final pred_len part as true future target
+            # true future target
             y_target = batch_y[:, -args.pred_len:, :]
 
-            # TemporalAE uses Linear(seq_len -> d_model), so input length must equal args.seq_len
-            assert batch_x.shape[1] == args.seq_len, (
-                f"batch_x length {batch_x.shape[1]} != args.seq_len {args.seq_len}"
-            )
-
-            assert y_target.shape[1] == args.seq_len, (
-                f"TemporalAE expects input length {args.seq_len}, "
-                f"but y_target length is {y_target.shape[1]}. "
-                f"Please set --pred_len == --seq_len for this first experiment."
-            )
-
+            # MLP AE encodes last dimension enc_in -> d_model
+            # It does not require pred_len == seq_len.
             z_x = model.encode(batch_x)
             z_y = model.encode(y_target)
 
@@ -109,7 +274,8 @@ def extract_latents(args, model, device, save_dir):
 
 def plot_pca(zy_flat, labels, K, save_dir):
     """
-    PCA 2D visualization of z_y clusters.
+    PCA is only for visualization.
+    KMeans is already done in high-dimensional z_y latent space.
     """
     pca = PCA(n_components=2, random_state=2021)
     zy_2d = pca.fit_transform(zy_flat)
@@ -137,13 +303,16 @@ def plot_pca(zy_flat, labels, K, save_dir):
 
 def decode_and_plot_centers(args, model, device, centers, all_zy, K, save_dir):
     """
-    Decode cluster centers back to observation space and plot their mean-channel curves.
+    Decode cluster centers back to original observation space.
 
-    centers shape:
-        [K, d_model * enc_in]
+    centers:
+        [K, pred_len * d_model]
 
-    all_zy shape:
-        [N, d_model, enc_in]
+    all_zy:
+        [N, pred_len, d_model]
+
+    decoded centers:
+        [K, pred_len, enc_in]
     """
     try:
         center_latents = centers.reshape(K, *all_zy.shape[1:])
@@ -152,7 +321,6 @@ def decode_and_plot_centers(args, model, device, centers, all_zy, K, save_dir):
         with torch.no_grad():
             center_decoded = model.decode(center_latents_torch).detach().cpu().numpy()
 
-        # center_decoded shape: [K, seq_len, enc_in]
         np.save(
             os.path.join(save_dir, f"zy_kmeanspp_decoded_centers_K{K}.npy"),
             center_decoded,
@@ -176,7 +344,7 @@ def decode_and_plot_centers(args, model, device, centers, all_zy, K, save_dir):
 
         print(f"  saved decoded center curves: {path}")
 
-        # Also plot each variable/channel separately for small enc_in
+        # Plot each channel separately if enc_in is not too large
         if center_decoded.shape[-1] <= 16:
             channel_dir = os.path.join(save_dir, f"decoded_centers_K{K}_channels")
             os.makedirs(channel_dir, exist_ok=True)
@@ -205,14 +373,21 @@ def decode_and_plot_centers(args, model, device, centers, all_zy, K, save_dir):
 def run_kmeanspp(args, model, device, all_zy, save_dir):
     """
     Run KMeans++ on flattened future latent trajectories z_y.
-    Save labels, centers, metrics, PCA plots, decoded center plots.
+
+    Actual clustering happens on:
+        all_zy.reshape(N, -1)
+
+    PCA and decoder plots are only for visualization/interpretation.
     """
     print("\nStart KMeans++ clustering on z_y...")
 
-    cluster_list = [4, 8, 16]
+    cluster_list = [8]
 
     N = all_zy.shape[0]
     zy_flat = all_zy.reshape(N, -1)
+
+    zy_flat_norm = zy_flat - zy_flat.mean(axis=1, keepdims=True)
+    zy_flat = zy_flat_norm / (zy_flat.std(axis=1, keepdims=True) + 1e-6)
 
     print(f"z_y original shape: {all_zy.shape}")
     print(f"z_y flat shape:     {zy_flat.shape}")
@@ -280,7 +455,7 @@ def run_kmeanspp(args, model, device, all_zy, save_dir):
         # Visualization
         plot_pca(zy_flat, labels, K, save_dir)
 
-        # Decode cluster centers
+        # Decode cluster centers for interpretation
         decode_and_plot_centers(args, model, device, centers, all_zy, K, save_dir)
 
     metrics_path = os.path.join(save_dir, "kmeanspp_metrics.txt")
@@ -292,15 +467,22 @@ def run_kmeanspp(args, model, device, all_zy, save_dir):
 
 
 def main():
+    print(">>> [1] before args_train", flush=True)
     args = args_train()
-    set_seed(args.seed)
-    device = acquire_device(args)
 
-    # First experiment should use seq_len == pred_len for TemporalAE
-    assert args.seq_len == args.pred_len, (
-        f"For TemporalAutoEncoder extraction, please set --seq_len == --pred_len. "
-        f"Got seq_len={args.seq_len}, pred_len={args.pred_len}."
-    )
+    print(">>> [2] after args_train", flush=True)
+    set_seed(args.seed)
+
+    # Windows 先强制 num_workers=0，避免 DataLoader 卡住
+    args.num_workers = 0
+
+    print(">>> [3] before acquire_device", flush=True)
+    device = acquire_device(args)
+    print(f">>> [4] device = {device}", flush=True)
+
+    args.ae_type = getattr(args, "ae_type", "MLP")
+    if args.ae_type.upper() != "MLP":
+        print(f"Warning: official checkpoints are usually MLP. Current ae_type={args.ae_type}", flush=True)
 
     save_dir = (
         f"./latent_outputs/"
@@ -308,15 +490,23 @@ def main():
         f"dm{args.d_model}_dff{args.d_ff}_{args.ae_type}"
     )
 
-    model = load_temporal_ae(args, device)
+    print(">>> [5] before load_pretrained_mlp_ae", flush=True)
+    model = load_pretrained_mlp_ae(args, device)
+    print(">>> [6] after load_pretrained_mlp_ae", flush=True)
+
+    print(">>> [7] before extract_latents", flush=True)
     all_zx, all_zy, all_y = extract_latents(args, model, device, save_dir)
+    print(">>> [8] after extract_latents", flush=True)
+
+    print(">>> [9] before run_kmeanspp", flush=True)
     run_kmeanspp(args, model, device, all_zy, save_dir)
+    print(">>> [10] after run_kmeanspp", flush=True)
 
     if args.gpu_type == "mps":
         torch.backends.mps.empty_cache()
     elif args.gpu_type == "cuda" and torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-
 if __name__ == "__main__":
+    print(">>> extract_y_latents.py started")
     main()

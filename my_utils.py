@@ -1,6 +1,8 @@
 import os
 import csv
 import argparse
+import pandas as pd  # preload before torch to avoid a pyarrow access violation on Windows
+from datasets import load_dataset  # preload before torch for the same pyarrow issue
 import torch
 import random
 import numpy as np
@@ -22,7 +24,7 @@ from utils.metrics import metric
 
 from models import Autoformer, Transformer, TimesNet, Nonstationary_Transformer, DLinear, FEDformer, \
     Informer, LightTS, Reformer, ETSformer, Pyraformer, PatchTST, MICN, Crossformer, FiLM, iTransformer, \
-    Koopa, TiDE, FreTS, TimeMixer, TSMixer, SegRNN, MambaSimple, TemporalFusionTransformer, SCINet, PAttn, TimeXer, \
+    TiDE, FreTS, TimeMixer, TSMixer, SegRNN, MambaSimple, TemporalFusionTransformer, SCINet, PAttn, TimeXer, \
     WPMixer, MultiPatchFormer, KANAD, MSGNet, TimeFilter, CMoS, TimeBase, ModernTCN
 
 model_dict = {
@@ -42,7 +44,10 @@ model_dict = {
     'Crossformer': Crossformer,
     'FiLM': FiLM,
     'iTransformer': iTransformer,
-    'Koopa': Koopa,
+    # Koopa imports data_provider at module import time and can trigger a pyarrow
+    # access violation on this Windows environment. Keep it out of the default
+    # registry so unrelated baselines such as DLinear can run.
+    # 'Koopa': Koopa,
     'TiDE': TiDE,
     'FreTS': FreTS,
     'MambaSimple': MambaSimple,
