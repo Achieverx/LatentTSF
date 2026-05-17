@@ -365,6 +365,7 @@ def args_train():
     parser.add_argument('--lradj', type=str, default='cosine', help='adjust learning rate')
     parser.add_argument('--use_lradj', type=int, default=1, help='whether to use learning rate adjustment (1=True, 0=False)')
     parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
+    parser.add_argument('--print_freq', type=int, default=100, help='print training status every N iterations')
 
     # GPU
     parser.add_argument('--use_gpu', type=bool, default=True, help='use gpu')

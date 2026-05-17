@@ -129,7 +129,7 @@ class TemporalAutoEncoder(nn.Module):
         self.d_ff = args.d_ff
 
         # Encoder: 对每个变量的时间序列进行编码
-        # (batch, enc_in, seq_len) → (batch, enc_in, d_model)
+        # (batch, enc_in, seq_len) -> (batch, enc_in, d_model)
         self.encoder = nn.Sequential(
             nn.Linear(self.seq_len, self.d_ff),
             nn.ReLU(),
@@ -290,23 +290,23 @@ def get_autoencoder(args):
     ae_type = getattr(args, 'ae_type', 'MLP').upper()
 
     if ae_type == 'MLP':
-        print(f"Using MLP AutoEncoder (enc_in → d_model)")
+        print(f"Using MLP AutoEncoder (enc_in -> d_model)")
         print(f"  Latent shape: (batch, seq_len, d_model)")
         return AutoEncoder(args)
     elif ae_type == 'MLP_REVIN':
-        print(f"Using MLP AutoEncoder with RevIN (enc_in → d_model)")
+        print(f"Using MLP AutoEncoder with RevIN (enc_in -> d_model)")
         print(f"  Latent shape: (batch, seq_len, d_model)")
         return AutoEncoder_Revin(args)
     elif ae_type == 'CNN':
-        print(f"Using Conv1d AutoEncoder (enc_in → d_model)")
+        print(f"Using Conv1d AutoEncoder (enc_in -> d_model)")
         print(f"  Latent shape: (batch, seq_len, d_model)")
         return Conv1dAutoEncoder(args)
     elif ae_type == 'TEMPORAL':
-        print(f"Using Temporal AutoEncoder (seq_len → d_model, Channel Independence)")
+        print(f"Using Temporal AutoEncoder (seq_len -> d_model, Channel Independence)")
         print(f"  Latent shape: (batch, d_model, enc_in)")
         return TemporalAutoEncoder(args)
     elif ae_type == 'TEMPORALCNN':
-        print(f"Using Temporal Conv1d AutoEncoder (seq_len → d_model, Channel Independence)")
+        print(f"Using Temporal Conv1d AutoEncoder (seq_len -> d_model, Channel Independence)")
         print(f"  Latent shape: (batch, d_model, enc_in)")
         return TemporalConv1dAutoEncoder(args)
     else:

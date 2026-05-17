@@ -183,6 +183,7 @@ run_anylearn.py
 environment.txt
 
 *.npy
+latent_outputs/
 
 embeddings/*
 embeddings_good_base/*

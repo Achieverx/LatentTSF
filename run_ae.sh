@@ -28,7 +28,7 @@ python -u my_AE.py \
   --patience 20 \
   --seed 42 \
   --use_lradj 0 \
-  --ae_type MLP \
+  --ae_type CNN \
   --ae_loss MAE \
   --des Exp-sl24-lr0.0005-500-32bs \
   --itr 1

@@ -727,7 +727,8 @@ if __name__ == "__main__":
 
                     train_loss.append(loss.item())
 
-                if (i + 1) % 100 == 0:
+                print_freq = max(getattr(args, 'print_freq', 100), 1)
+                if (i + 1) % print_freq == 0:
                     if args.use_latent:
                         print(f"\titers: {i+1}, epoch: {epoch+1} | loss: {loss.item():.7f}")
                         print(f"\t  latent: {latent_loss.item():.7f} (mse: {mse_loss.item():.7f}, cos: {cos_loss.item():.7f})")
