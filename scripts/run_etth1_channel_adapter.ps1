@@ -2,15 +2,16 @@ $ROOT = Split-Path -Parent $PSScriptRoot
 Set-Location $ROOT
 $env:WANDB_MODE = "offline"
 
+$PYTHON = "D:\ProgramData\Anaconda3\envs\latentworld\python.exe"
 $AE_PATH = ".\checkpoints\AutoEncoder_MLP_MAE_ETTh1_AE_ETTh1_ftM_sl24_dm32_dff64_lradj0_Exp-sl24-lr0.0005-500-32bs_0\checkpoint.pth"
-$LATENTTSF_CKPT = ".\checkpoints\latenttsf_pure_ETTh1_sl96_pl96\best_latent_proto_regularized.pt"
+$BASELINE_DIR = ".\checkpoints\latenttsf_pure_ETTh1_sl96_pl96"
+$BASELINE_CKPT = Join-Path $BASELINE_DIR "best_latent_proto_regularized.pt"
 
-D:\ProgramData\Anaconda3\envs\latentworld\python.exe -u .\sweep_temporal_lora_adapter.py `
-  --output_dir ".\latent_outputs\temporal_lora_sweep_purebase_ETTh1_formal" `
-  --cache_dir ".\latent_outputs\temporal_lora_sweep_purebase_ETTh1_formal\cache" `
+& $PYTHON -u .\train_latenttsf_channel_adapter.py `
+  --output_dir ".\checkpoints\latenttsf_channel_adapter_ETTh1_sl96_pl96" `
   --autoencoder_path $AE_PATH `
-  --latenttsf_checkpoint $LATENTTSF_CKPT `
-  --model DLinear `
+  --latenttsf_checkpoint $BASELINE_CKPT `
+  --model iTransformer `
   --task_name long_term_forecast `
   --data ETTh1 `
   --root_path .\dataset\ETT-small\ `
@@ -29,17 +30,15 @@ D:\ProgramData\Anaconda3\envs\latentworld\python.exe -u .\sweep_temporal_lora_ad
   --d_ff 64 `
   --ae_type MLP `
   --moving_avg 25 `
-  --rank_pairs "2x2,4x1,4x2,4x3,6x2,8x2" `
-  --alpha_inits "0.001,0.003,0.01" `
-  --lambda_deltas "0.0001,0.001,0.01" `
-  --seeds "2021,2022,2023" `
-  --hidden_dim 64 `
-  --alpha_max 0.2 `
+  --adapter_hidden_dim 128 `
+  --dropout 0.1 `
+  --alpha 0.01 `
+  --lambda_reg 0.1 `
   --epochs 40 `
   --patience 8 `
   --batch_size 128 `
   --num_workers 0 `
-  --lr 0.0001 `
+  --lr 0.00005 `
   --weight_decay 0.0001 `
   --grad_clip 1.0 `
   --device cuda

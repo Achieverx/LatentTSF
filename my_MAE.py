@@ -12,22 +12,18 @@ Design:
 """
 
 import os
-import math
 import torch
 import torch.nn as nn
-import torch.backends
 import numpy as np
 import time
 from torch import optim
 
-from utils.tools import EarlyStopping, adjust_learning_rate
+from utils.tools import EarlyStopping
 from my_utils import args_train, set_seed, acquire_device, get_data
 
 
 def get_1d_sincos_pos_embed(embed_dim, length):
-    """
-    生成1D正弦余弦位置编码
-    """
+    """Build fixed 1D sine-cosine positional embeddings."""
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float32)
     omega /= embed_dim / 2.
@@ -54,7 +50,11 @@ class MaskedAutoEncoder(nn.Module):
     def __init__(self, args):
         super().__init__()
 
-        # 基础配置
+        if args.seq_len % args.patch_len != 0:
+            raise ValueError(
+                f"seq_len ({args.seq_len}) must be divisible by patch_len ({args.patch_len})"
+            )
+
         self.seq_len = args.seq_len
         self.enc_in = args.enc_in
         self.patch_len = args.patch_len
@@ -70,7 +70,7 @@ class MaskedAutoEncoder(nn.Module):
             requires_grad=False
         )
 
-        # Encoder: 2层MLP (patch_dim -> d_ff -> d_model)
+        # Encoder and decoder both operate on flattened patches.
         self.encoder = nn.Sequential(
             nn.Linear(self.patch_dim, self.d_ff),
             nn.GELU(),
@@ -88,11 +88,9 @@ class MaskedAutoEncoder(nn.Module):
             nn.Linear(self.d_ff, self.patch_dim),
         )
 
-        # 初始化
         self.initialize_weights()
 
     def initialize_weights(self):
-        # 位置编码初始化
         pos_embed = get_1d_sincos_pos_embed(self.d_model, self.num_patches)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
@@ -107,11 +105,11 @@ class MaskedAutoEncoder(nn.Module):
 
     def patchify(self, x):
         """
-        将输入序列分成patches
+        Split the input sequence into flattened patches.
         x: (batch, seq_len, enc_in)
         return: (batch, num_patches, patch_dim)
         """
-        B, L, C = x.shape
+        B, _, C = x.shape
         x = x.reshape(B, self.num_patches, self.patch_len, C)
         x = x.reshape(B, self.num_patches, -1)
         return x
@@ -126,33 +124,25 @@ class MaskedAutoEncoder(nn.Module):
         x = x.reshape(B, self.seq_len, self.enc_in)
         return x
 
-    def random_masking(self, x):
+    def random_masking(self, x, mask_ratio=None):
         """
-        随机masking
+        Randomly mask a subset of patch embeddings.
         x: (batch, num_patches, d_model)
 
         Returns:
         - x_masked: visible patches only
-        - mask: 二值mask, 0保留, 1mask
-        - ids_restore: 恢复顺序的索引
+        - mask: binary patch mask, 0 = keep, 1 = mask
+        - ids_restore: indices that restore the original patch order
         """
         B, N, D = x.shape
-        len_keep = int(N * (1 - self.mask_ratio))
+        ratio = self.mask_ratio if mask_ratio is None else mask_ratio
+        len_keep = int(N * (1 - ratio))
 
-        # 随机噪声
         noise = torch.rand(B, N, device=x.device)
-
-        # 排序
         ids_shuffle = torch.argsort(noise, dim=1)
         ids_restore = torch.argsort(ids_shuffle, dim=1)
-
-        # 保留前len_keep个
         ids_keep = ids_shuffle[:, :len_keep]
-
-        # 收集visible patches
         x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-
-        # 生成mask
         mask = torch.ones([B, N], device=x.device)
         mask[:, :len_keep] = 0
         mask = torch.gather(mask, dim=1, index=ids_restore)
@@ -161,39 +151,27 @@ class MaskedAutoEncoder(nn.Module):
 
     def forward_encoder(self, x, mask_ratio=None):
         """Encoder forward with masking. x: (batch, seq_len, enc_in)."""
-        # Patchify
-        x = self.patchify(x)  # (B, num_patches, patch_dim)
-
-        # Encode each patch
-        x = self.encoder(x)  # (B, num_patches, d_model)
-
-        # Add position embedding
+        x = self.patchify(x)
+        x = self.encoder(x)
         x = x + self.pos_embed
-
-        # Random masking
-        x_masked, mask, ids_restore, ids_keep = self.random_masking(x)
+        x_masked, mask, ids_restore, _ = self.random_masking(x, mask_ratio=mask_ratio)
 
         return x_masked, mask, ids_restore
 
     def forward_decoder(self, x, ids_restore):
         """
-        Decoder前向传播
+        Decode visible tokens plus mask tokens back to patch space.
         x: visible patches (batch, num_visible, d_model)
-        ids_restore: 恢复顺序的索引
+        ids_restore: indices that restore the original patch order
         """
         B = x.shape[0]
         num_visible = x.shape[1]
         num_masked = self.num_patches - num_visible
 
-        # 添加mask tokens
         mask_tokens = self.mask_token.repeat(B, num_masked, 1)
         x_full = torch.cat([x, mask_tokens], dim=1)
-
-        # 恢复原始顺序
         x_full = torch.gather(x_full, dim=1,
                               index=ids_restore.unsqueeze(-1).repeat(1, 1, x_full.shape[2]))
-
-        # Decode
         pred = self.decoder(x_full)  # (B, num_patches, patch_dim)
 
         return pred
@@ -212,13 +190,13 @@ class MaskedAutoEncoder(nn.Module):
 
     def forward(self, x, mask_ratio=None):
         """
-        完整前向传播 (training with masking)
+        Full MAE training forward pass.
         x: (batch, seq_len, enc_in)
 
         Returns:
-        - loss: masked patches的重建损失
-        - pred: 重建的patches
-        - mask: 二值mask
+        - loss: reconstruction loss on masked patches only
+        - pred: reconstructed patches
+        - mask: binary patch mask
         """
         latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)
@@ -244,14 +222,11 @@ class MaskedAutoEncoder(nn.Module):
 
     def decode(self, latent):
         """
-        从latent解码回原始空间
+        Decode patch latents back to the original sequence space.
         latent: (batch, num_patches, d_model)
         Returns: (batch, seq_len, enc_in)
         """
-        # Decode
         pred = self.decoder(latent)  # (B, num_patches, patch_dim)
-
-        # Unpatchify
         pred = self.unpatchify(pred)  # (B, seq_len, enc_in)
 
         return pred
@@ -264,17 +239,12 @@ class MaskedAutoEncoder(nn.Module):
 
     def encode_seq(self, x):
         """
-        获取与AE统一接口的latent representation
+        Expand patch embeddings into a seq_len-aligned latent tensor.
         x: (batch, seq_len, enc_in)
-        Returns: (batch, seq_len, d_model) - 与AE的encode接口一致
-
-        实现：将每个patch的embedding重复patch_len次
+        Returns: (batch, seq_len, d_model)
         """
-        # 先获取patch-level embedding: (B, num_patches, d_model)
         patch_embed = self.encode(x)
 
-        # 将每个patch的embedding重复patch_len次: (B, seq_len, d_model)
-        # (B, num_patches, d_model) -> (B, num_patches, patch_len, d_model) -> (B, seq_len, d_model)
         B = patch_embed.shape[0]
         seq_embed = patch_embed.unsqueeze(2).repeat(1, 1, self.patch_len, 1)
         seq_embed = seq_embed.reshape(B, self.seq_len, self.d_model)
@@ -296,7 +266,7 @@ class MaskedAutoEncoder(nn.Module):
 
 
 def valid_mae(args, model, valid_loader, device):
-    """验证MAE (masked loss)"""
+    """Evaluate masked-patch reconstruction loss."""
     model.eval()
     total_loss = []
 
@@ -439,7 +409,6 @@ if __name__ == "__main__":
                 print("Early stopping")
                 break
 
-        # 加载最佳模型
         best_model_path = path + '/' + 'checkpoint.pth'
         model.load_state_dict(torch.load(best_model_path))
 
@@ -468,7 +437,6 @@ if __name__ == "__main__":
         print(f"Final Test Masked Recon Loss (MSE): {final_test_loss_masked:.7f}")
         print(f"Final Test Full Recon Loss (MSE): {final_test_loss_recon:.7f}")
 
-        # 保存结果
         result_path = './result/' + setting + '/'
         if not os.path.exists(result_path):
             os.makedirs(result_path)

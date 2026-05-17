@@ -8,7 +8,7 @@ $AE_PATH = ".\checkpoints\AutoEncoder_MLP_MAE_ETTh1_AE_ETTh1_ftM_sl24_dm32_dff64
 & $PYTHON -u .\train_latent_proto_regularized.py `
   --output_dir ".\checkpoints\latenttsf_pure_ETTh1_sl96_pl96" `
   --autoencoder_path $AE_PATH `
-  --model DLinear `
+  --model iTransformer `
   --task_name long_term_forecast `
   --data ETTh1 `
   --root_path .\dataset\ETT-small\ `

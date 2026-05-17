@@ -9,45 +9,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn.cluster import MiniBatchKMeans
-from torch.utils.data import DataLoader
 
-from data_provider.data_factory import data_provider
-from my_AE import get_autoencoder
 from my_utils import model_dict
-
-
-def set_seed(seed):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def official_loader(args, flag, shuffle=False):
-    data_set, _ = data_provider(args, flag)
-    return DataLoader(
-        data_set,
-        batch_size=args.batch_size,
-        shuffle=shuffle,
-        num_workers=args.num_workers,
-        drop_last=False,
-    )
-
-
-def load_autoencoder(args, device):
-    autoencoder = get_autoencoder(args).float().to(device)
-    state_dict = torch.load(args.autoencoder_path, map_location=device, weights_only=False)
-
-    if isinstance(state_dict, dict) and "autoencoder_state_dict" in state_dict:
-        state_dict = state_dict["autoencoder_state_dict"]
-    if any(k.startswith("module.") for k in state_dict.keys()):
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-
-    autoencoder.load_state_dict(state_dict)
-    autoencoder.eval()
-    for param in autoencoder.parameters():
-        param.requires_grad = False
-    return autoencoder
+from utils.latent_script_utils import load_autoencoder, official_loader, set_seed
 
 
 def patchify(seq, patch_len):
@@ -414,10 +378,23 @@ def main():
     parser.add_argument("--c_out", type=int, default=7)
     parser.add_argument("--d_model", type=int, default=32)
     parser.add_argument("--d_ff", type=int, default=64)
+    parser.add_argument("--n_heads", type=int, default=4)
+    parser.add_argument("--e_layers", type=int, default=2)
+    parser.add_argument("--d_layers", type=int, default=1)
+    parser.add_argument("--factor", type=int, default=1)
+    parser.add_argument("--activation", type=str, default="gelu")
     parser.add_argument("--ae_type", type=str, default="MLP")
     parser.add_argument("--moving_avg", type=int, default=25)
     parser.add_argument("--individual", action="store_true", default=False)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--top_k", type=int, default=5)
+    parser.add_argument("--num_kernels", type=int, default=6)
+    parser.add_argument("--patch_len", type=int, default=16)
+    parser.add_argument("--channel_independence", type=int, default=1)
+    parser.add_argument("--decomp_method", type=str, default="moving_avg")
+    parser.add_argument("--use_norm", type=int, default=1)
+    parser.add_argument("--down_sampling_layers", type=int, default=0)
+    parser.add_argument("--down_sampling_window", type=int, default=1)
 
     parser.add_argument("--codebook_size", type=int, default=64)
     parser.add_argument("--proto_patch_len", type=int, default=16)
